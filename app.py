@@ -20,9 +20,13 @@ import json
 import logging
 import os
 import re
+import socket
 import sqlite3
+import sys
 import threading
 import time
+import traceback
+import urllib.error
 from logging.handlers import RotatingFileHandler
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,8 +54,23 @@ def emit(level, kind, msg, **data):
     ev = {"id": next(_EV_ID), "ts": int(time.time() * 1000), "level": level, "kind": kind, "msg": msg, "data": data}
     with _EV_LOCK:
         EVENTS.append(ev)
-    LOG.log(getattr(logging, level), "%-8s %s%s", kind, msg, ("  " + json.dumps(data)) if data else "")
+    shown = {k: v for k, v in data.items() if k != "traceback"}  # the traceback stays in the event, not in one log line
+    LOG.log(getattr(logging, level), "%-8s %s", kind, msg,
+            extra={"kind": kind, "data_json": json.dumps(shown) if shown else ""})
     return ev
+
+
+class LineFormatter(logging.Formatter):
+    """`time LEVEL kind message`, plus the event's data as JSON for the log file (not for the console)."""
+
+    def __init__(self, with_data):
+        super().__init__("%(asctime)s %(levelname)-7s %(message)s")
+        self.with_data = with_data
+
+    def format(self, record):
+        line = super().format(record)
+        data = getattr(record, "data_json", "")
+        return f"{line}  {data}" if self.with_data and data else line
 
 
 def events_after(after_id, limit=500):
@@ -70,19 +89,56 @@ def _on_http(e):
              type=e["type"], dex=e["dex"], ms=e["ms"], error=e["error"], attempt=e["attempt"])
 
 
-def setup_logging(cfg):
+class ConsoleFilter(logging.Filter):
+    """A calm console: position changes and HTTP calls only with --verbose (they stay in the log and Debug panel)."""
+    QUIET_KINDS = ("position", "http")
+
+    def __init__(self, verbose=False):
+        super().__init__()
+        self.verbose = verbose
+
+    def filter(self, record):
+        return (self.verbose or record.levelno >= logging.WARNING
+                or getattr(record, "kind", "") not in self.QUIET_KINDS)
+
+
+def explain_error(e):
+    """A plain-language hint for the errors people actually meet, or None."""
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code == 429:
+            return "rate limited by Hyperliquid (HTTP 429): raise interval_seconds or track fewer wallets; calls are retried"
+        if e.code >= 500:
+            return f"Hyperliquid server error (HTTP {e.code}): usually temporary, the next round tries again"
+        return f"Hyperliquid answered HTTP {e.code}"
+    if isinstance(e, sqlite3.OperationalError):
+        text = str(e).lower()
+        if "locked" in text:
+            return "the database is locked: another program, or a second copy of this app, is using hyperliquid.sqlite"
+        if "readonly" in text or "disk" in text or "unable to open" in text:
+            return "cannot write to the database file: check folder permissions and free disk space"
+        return None
+    if isinstance(e, json.JSONDecodeError):
+        return "unexpected answer from the API (not JSON): usually temporary"
+    if isinstance(e, KeyError):
+        return f"unexpected API response format (missing field {e})"
+    if isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout, socket.gaierror)):
+        return "cannot reach api.hyperliquid.xyz: check the internet connection, VPN or firewall"
+    return None
+
+
+def setup_logging(cfg, verbose=False):
     log_dir = Path(cfg["log_dir"])
     log_dir.mkdir(parents=True, exist_ok=True)
     LOG.handlers.clear()
     LOG.setLevel(logging.DEBUG)
     LOG.propagate = False
-    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s")
     fh = RotatingFileHandler(log_dir / "hyperliquid-logger.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
     fh.setLevel(getattr(logging, str(cfg["log_level"]).upper(), logging.DEBUG))
-    fh.setFormatter(fmt)
+    fh.setFormatter(LineFormatter(with_data=True))
     ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
+    ch.setLevel(logging.DEBUG if verbose else logging.INFO)
+    ch.addFilter(ConsoleFilter(verbose))
+    ch.setFormatter(LineFormatter(with_data=False))
     LOG.addHandler(fh)
     LOG.addHandler(ch)
     STATE["log_file"] = str(log_dir / "hyperliquid-logger.log")
@@ -229,17 +285,22 @@ def positions_map(db, address):
 
 
 def emit_changes(label, address, before, after):
-    """Position events between two rounds: the quickest way to see that live data arrives."""
+    """Position events between two rounds: the quickest way to see that live data arrives. Returns their count."""
+    n = 0
     for coin, szi in after.items():
         if coin not in before:
+            n += 1
             emit("INFO", "position", f"{label}: {coin} OPENED size {szi:,.4f}", address=address, coin=coin, new=szi)
         elif before[coin] != szi:
+            n += 1
             emit("INFO", "position",
                  f"{label}: {coin} size {before[coin]:,.4f} -> {szi:,.4f} ({szi - before[coin]:+,.4f})",
                  address=address, coin=coin, old=before[coin], new=szi)
     for coin, szi in before.items():
         if coin not in after:
+            n += 1
             emit("INFO", "position", f"{label}: {coin} CLOSED (was {szi:,.4f})", address=address, coin=coin, old=szi)
+    return n
 
 
 def collect_once(db, cfg, round_ms=None, post=None):
@@ -266,7 +327,10 @@ def collect_once(db, cfg, round_ms=None, post=None):
                      address=ad, positions=n, equity=s["equity"], position_value=s["position_value"], upnl=s["upnl"],
                      open_orders=s["n_open_orders"], exchange_ts=ts, ms=round((time.time() - t0) * 1000))
             if before:
-                emit_changes(label, ad, before, positions_map(db, ad))
+                changes = emit_changes(label, ad, before, positions_map(db, ad))
+                if changes:
+                    emit("INFO", "changes", f"{label}: {changes} position change{'s' if changes != 1 else ''} "
+                         "(details: Debug panel, log file or --verbose)", address=ad, changes=changes)
             if a["fills"]:
                 nf = logger.pull_fills(db, ad, int(cfg["backfill_hours"] * 3600_000), **kw)
                 emit("INFO", "fills", f"{label}: {nf} new fills", address=ad, new_fills=nf)
@@ -275,8 +339,10 @@ def collect_once(db, cfg, round_ms=None, post=None):
             else:
                 STATE["errors"].pop(ad, None)
         except Exception as e:  # network trouble must not kill the loop
-            STATE["errors"][ad] = repr(e)
-            emit("ERROR", "error", f"{label}: {e!r}", address=ad)
+            hint = explain_error(e)
+            STATE["errors"][ad] = hint or repr(e)
+            emit("ERROR", "error", f"{label}: {hint} ({e!r})" if hint else f"{label}: {e!r}", address=ad,
+                 traceback=traceback.format_exc())
     STATE["last_round_ms"] = round_ms
     STATE["last_duration_ms"] = round((time.time() - t_round) * 1000)
     emit("INFO", "round", f"round #{STATE['rounds']} done in {STATE['last_duration_ms']} ms", round=STATE["rounds"],
@@ -321,7 +387,10 @@ def collect_loop(config_path, stop):
             cfg = new
         except Exception as e:
             emit("ERROR", "config", f"config error, keeping the previous one: {e!r}")
-        collect_once(db, cfg)
+        try:
+            collect_once(db, cfg)
+        except Exception as e:  # never let the collector thread die silently
+            emit("ERROR", "error", f"round failed: {explain_error(e) or repr(e)}", traceback=traceback.format_exc())
         wait_or_config_change(stop, max(1.0, cfg["interval_seconds"] - (time.time() - started)), config_path,
                               changed_since=round_mtime)
 
@@ -430,6 +499,21 @@ def q_status(db, cfg):
                            "error": STATE["errors"].get(a["address"])} for a in cfg["addresses"]]}
 
 
+def tail_text(path, lines=300, max_bytes=200_000):
+    """The last `lines` lines of a text file, reading at most `max_bytes` from its end."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+    except OSError:
+        return f"(no log file yet at {path})\n"
+    out = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes:
+        out = out[1:]  # the first line is cut in the middle
+    return "\n".join(out[-lines:]) + "\n"
+
+
 # ---------------------------------------------------------------- http
 
 def make_handler(holder):
@@ -496,6 +580,10 @@ def make_handler(holder):
             if not u.path.startswith("/api/"):
                 return self.send(404, b"not found", "text/plain")
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            if u.path == "/api/log":
+                n = max(1, min(int(q.get("lines", 300)), 2000))
+                return self.send(200, tail_text(str(STATE["log_file"] or ""), n).encode("utf-8"),
+                                 "text/plain; charset=utf-8")
             db = None
             try:
                 cfg = holder.get()  # last valid configuration, even while config.json is being edited
@@ -528,25 +616,56 @@ def make_handler(holder):
     return H
 
 
-def main():
+class StartupError(Exception):
+    """The app cannot start; the message says why and what to do."""
+
+
+class LocalServer(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR would let a second copy bind the same port instead of failing.
+    allow_reuse_address = os.name != "nt"
+
+
+def bind_server(port, handler):
+    try:
+        return LocalServer(("127.0.0.1", int(port)), handler)
+    except OSError as e:
+        raise StartupError(
+            f"port {port} is already in use ({e.strerror or e}). Another copy of the app is probably running: "
+            f'open http://127.0.0.1:{port}, stop that copy, or change "port" in config.json.') from e
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=str(HERE / "config.json"))
     ap.add_argument("--no-collect", action="store_true", help="only serve the dashboard")
-    a = ap.parse_args()
-    holder = ConfigHolder(a.config)
-    cfg = holder.get()  # an invalid file at startup stops here with the parse error
-    setup_logging(cfg)
-    logger.connect(cfg["db"]).close()  # make sure the file and schema exist before serving
+    ap.add_argument("--verbose", action="store_true", help="print every position change and HTTP call to the console")
+    ap.add_argument("--check", action="store_true", help="self-check (config, port, database, API, wallets), then exit")
+    a = ap.parse_args(argv)
+    if a.check:
+        import check
+        sys.exit(check.run(a.config))
+    try:
+        holder = ConfigHolder(a.config)
+        cfg = holder.get()
+        setup_logging(cfg, a.verbose)
+        logger.connect(cfg["db"]).close()  # make sure the file and schema exist before serving
+        srv = bind_server(cfg["port"], make_handler(holder))  # before the collector: two copies must never both write
+    except StartupError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: cannot start with config file {a.config}: {e}", file=sys.stderr)
+        sys.exit(1)
     stop = threading.Event()
     if not a.no_collect:
         threading.Thread(target=collect_loop, args=(a.config, stop), daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", int(cfg["port"])), make_handler(holder))
     emit("INFO", "start", f"dashboard http://127.0.0.1:{cfg['port']}  interval {cfg['interval_seconds']:.0f} s  "
-         f"db {cfg['db']}  log {STATE['log_file']}")
+         f"wallets: {', '.join(w['label'] for w in cfg['addresses']) or 'none'}  db {cfg['db']}  log {STATE['log_file']}"
+         "  (Ctrl+C stops; --check = self-check, --verbose = every event)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        pass
+        emit("INFO", "start", "stopped")
     finally:
         stop.set()
 

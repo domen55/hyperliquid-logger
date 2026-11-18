@@ -1,5 +1,9 @@
 # hyperliquid-logger
 
+> **Run instructions (Slovenian): [NAVODILA.md](NAVODILA.md)** - start with `python app.py` or `start.cmd`, self-check with
+> `python app.py --check` or `check.cmd`, errors and what to do about them. `--verbose` prints every event to the console.
+> The Debug panel's "log file" link (`/api/log`) shows the tail of the log, also from before a restart.
+
 ## Local app: collector + dashboard
 
 ```
