@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyperliquid logger</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171d25; --line: #2a333f; --text: #e6e9ee; --muted: #8b96a5;
+    --accent: #4da3ff; --green: #3ecf8e; --red: #ff6b6b; --warn: #f5b84b;
+    --c1: #4da3ff; --c2: #f5b84b; --c3: #3ecf8e; --c4: #c792ea;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f6f9; --panel: #fff; --line: #dde2ea; --text: #17202b; --muted: #627085;
+            --accent: #1f6fd0; --green: #12945f; --red: #d23a3a; --warn: #b87a00;
+            --c1: #1f6fd0; --c2: #b87a00; --c3: #12945f; --c4: #8a4fc4; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; margin-bottom: 14px; }
+  h1 { font-size: 18px; margin: 0 auto 0 0; font-weight: 600; }
+  select, input { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 6px; padding: 6px 10px; font: inherit; }
+  .status { color: var(--muted); font-size: 13px; width: 100%; }
+  .status.warn { color: var(--warn); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .panel h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  .chartbox { position: relative; height: 230px; }
+  .tablebox { max-height: 440px; overflow: auto; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 5px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; font-size: 12px; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  tbody tr.sel { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .pos { color: var(--green); } .neg { color: var(--red); } .muted { color: var(--muted); }
+  th.trh { color: var(--accent); }
+  #wallets table td { padding: 6px 10px; }
+  #wallets .row { gap: 8px 12px; }
+  td.trend small { color: var(--muted); margin-left: 4px; }
+  td.trend.new { color: var(--accent); }
+  .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+           padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #debug { position: fixed; left: 0; right: 0; bottom: 0; height: 38vh; background: var(--panel);
+           border-top: 2px solid var(--accent); display: flex; flex-direction: column; z-index: 10; }
+  #debug[hidden] { display: none; }
+  body.dbg .wrap { padding-bottom: 42vh; }
+  #dbgBar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 12px;
+            border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  #dbgBar label { cursor: pointer; color: var(--text); }
+  #dbgBar .grow { flex: 1; min-width: 160px; }
+  #dbgLog { flex: 1; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; padding: 4px 12px; }
+  .ev { white-space: pre-wrap; word-break: break-word; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+  .ev .t { color: var(--muted); } .ev .k { display: inline-block; min-width: 64px; color: var(--accent); }
+  .ev.WARNING .m { color: var(--warn); } .ev.ERROR .m { color: var(--red); font-weight: 600; }
+  .ev.DEBUG .m { color: var(--muted); } .ev.position .m { color: var(--green); }
+  @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } .wrap { padding: 12px 16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Hyperliquid logger</h1>
+    <select id="address" aria-label="Wallet"></select>
+    <button id="walletsBtn" title="Add or remove tracked wallets">Wallets</button>
+    <label class="muted" title="Period shown in the charts. The 15 min / 2 h / 1 day trend columns do not depend on it.">Range
+    <select id="range" aria-label="Chart range">
+      <option value="3600000">1 h</option>
+      <option value="21600000">6 h</option>
+      <option value="86400000" selected>24 h</option>
+      <option value="604800000">7 d</option>
+      <option value="2592000000">30 d</option>
+      <option value="0">All</option>
+    </select></label>
+    <button id="dbgBtn" title="Live event log">Debug</button>
+    <div class="status" id="status">loading…</div>
+  </header>
+
+  <div class="panel" id="wallets" hidden style="margin-bottom:14px">
+    <div class="row"><h2 style="margin:0">Tracked wallets</h2><button id="walletsClose" type="button">Close</button></div>
+    <table><tbody id="walletList"></tbody></table>
+    <form id="walletForm" class="row" style="justify-content:flex-start;margin-top:12px">
+      <input id="wAddr" placeholder="0x… wallet address" size="46" required spellcheck="false" autocomplete="off">
+      <input id="wLabel" placeholder="label (optional)" size="18" maxlength="40">
+      <label><input type="checkbox" id="wFills"> collect fills</label>
+      <button type="submit" id="wAdd">Add</button>
+    </form>
+    <div id="wMsg" class="muted" style="margin-top:6px;min-height:1.4em"></div>
+    <div class="muted" style="font-size:12px">Changes are saved to config.json; the collector picks a new wallet up at once.
+      Removing a wallet keeps its stored history.</div>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="grid2">
+    <div class="panel"><h2>Equity and position value (USD)</h2><div class="chartbox"><canvas id="c_acc"></canvas></div></div>
+    <div class="panel"><h2>Unrealized PnL (USD)</h2><div class="chartbox"><canvas id="c_upnl"></canvas></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">Perp positions (latest snapshot) - click a row for its history</h2>
+      <div class="row">
+        <label class="muted" title="What the 15 min / 2 h / 1 day columns show">Trend of
+          <select id="trendMetric">
+            <option value="szi">size</option>
+            <option value="position_value">position value</option>
+            <option value="upnl">uPnL</option>
+          </select></label>
+        <input id="filter" placeholder="filter symbol…" size="16">
+      </div>
+    </div>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>Δ vs prev</th><th class="trh">15 min</th><th class="trh">2 h</th><th class="trh">1 day</th><th>Position value</th>
+          <th>uPnL</th><th>ROE</th><th>Entry</th><th>Mark</th><th>Liq.</th><th>Lev.</th></tr></thead>
+        <tbody id="pos"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:14px">
+    <h2 id="coinTitle">Position history</h2>
+    <div class="grid2" style="margin:0">
+      <div><div class="muted">Size</div><div class="chartbox"><canvas id="c_szi"></canvas></div></div>
+      <div><div class="muted">Position value (USD)</div><div class="chartbox"><canvas id="c_pv"></canvas></div></div>
+      <div><div class="muted">uPnL (USD)</div><div class="chartbox"><canvas id="c_pupnl"></canvas></div></div>
+      <div><div class="muted">Mark / entry price</div><div class="chartbox"><canvas id="c_px"></canvas></div></div>
+    </div>
+  </div>
+
+  <details><summary>Spot balances (latest snapshot)</summary>
+    <div class="tablebox"><table><thead><tr><th>Coin</th><th></th><th>Total</th><th>Hold</th></tr></thead>
+    <tbody id="spot"></tbody></table></div>
+  </details>
+</div>
+
+<div id="debug" hidden>
+  <div id="dbgBar">
+    <strong style="color:var(--text)">Debug log</strong>
+    <span id="dbgInfo" class="grow">…</span>
+    <label><input type="checkbox" id="dbgHttp"> HTTP calls</label>
+    <label><input type="checkbox" id="dbgPause"> pause</label>
+    <button id="dbgClear">Clear</button>
+    <button id="dbgClose">Close</button>
+  </div>
+  <div id="dbgLog"></div>
+</div>
+
+<script src="/chart.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const state = { address: null, coin: null, interval: 300 };
+const num = (x, d = 0) => x == null ? '–' : Number(x).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const usd = x => x == null ? '–' : (x < 0 ? '-$' : '$') + num(Math.abs(x));
+const sgn = x => x == null ? '' : x >= 0 ? 'pos' : 'neg';
+const px = x => x == null ? '–' : num(x, Math.abs(x) < 1 ? 6 : Math.abs(x) < 100 ? 4 : 2);
+const size = (x, coin) => Number(x).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' ' + coin;
+const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 });
+const hhmm = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const stamp = t => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const api = async (path, params = {}) => {
+  const r = await fetch('/api/' + path + '?' + new URLSearchParams(params));
+  if (!r.ok) throw new Error(path + ' ' + r.status);
+  return r.json();
+};
+const since = () => { const r = +$('#range').value; return r ? Date.now() - r : 0; };
+
+Chart.defaults.color = css('--muted');
+Chart.defaults.borderColor = css('--line');
+function mkChart(id, defs, yfmt = compact.format) {
+  return new Chart($(id), {
+    type: 'line',
+    data: { datasets: defs.map(d => ({ label: d.label, data: [], borderColor: css(d.color), backgroundColor: css(d.color),
+      borderWidth: 1.6, pointRadius: 2, pointHoverRadius: 4, tension: 0, borderDash: d.dash || [] })) },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false, parsing: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { type: 'linear', ticks: { maxTicksLimit: 7, callback: (v, i, t) => {
+          const span = t.length > 1 ? t[t.length - 1].value - t[0].value : 0;
+          return span > 36 * 3600e3 ? new Date(v).toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + hhmm(v)
+               : span < 600e3 ? new Date(v).toLocaleTimeString() : hhmm(v);
+        } } },
+        y: { ticks: { callback: v => yfmt(v) } },
+      },
+      plugins: {
+        legend: { display: defs.length > 1 },
+        tooltip: { callbacks: { title: i => stamp(i[0].parsed.x), label: i => i.dataset.label + ': ' + num(i.parsed.y, 4) } },
+      },
+    },
+  });
+}
+function setData(chart, cols, rows, keys) {
+  const idx = Object.fromEntries(cols.map((c, i) => [c, i]));
+  keys.forEach((k, di) => {
+    chart.data.datasets[di].data = rows.filter(r => r[idx[k]] != null).map(r => ({ x: r[idx.t], y: r[idx[k]] }));
+  });
+  // fix the x range to the data (a linear axis with 1-2 points would otherwise pick a huge span)
+  const xs = rows.map(r => r[idx.t]);
+  if (xs.length) {
+    const lo = Math.min(...xs), hi = Math.max(...xs), pad = Math.max((hi - lo) * 0.02, 30000);
+    chart.options.scales.x.min = lo - pad;
+    chart.options.scales.x.max = hi + pad;
+  }
+  chart.update();
+}
+const charts = {
+  acc: mkChart('#c_acc', [{ label: 'Equity', color: '--c1' }, { label: 'Position value', color: '--c2' }]),
+  upnl: mkChart('#c_upnl', [{ label: 'uPnL', color: '--c3' }]),
+  szi: mkChart('#c_szi', [{ label: 'Size', color: '--c1' }], v => num(v, 2)),
+  pv: mkChart('#c_pv', [{ label: 'Position value', color: '--c2' }]),
+  pupnl: mkChart('#c_pupnl', [{ label: 'uPnL', color: '--c3' }]),
+  px: mkChart('#c_px', [{ label: 'Mark', color: '--c1' }, { label: 'Entry', color: '--c4', dash: [5, 4] }], v => px(v)),
+};
+
+function renderCards(s) {
+  const items = [
+    ['Account equity', usd(s.equity), ''], ['Position value', usd(s.position_value), ''],
+    ['uPnL', usd(s.upnl), sgn(s.upnl)], ['Leverage', s.leverage == null ? '–' : num(s.leverage, 2) + 'x', ''],
+    ['Margin used', usd(s.margin_used), ''], ['Long / short', usd(s.long_value) + ' / ' + usd(s.short_value), ''],
+    ['Positions', num(s.n_positions), ''], ['Open orders', num(s.n_open_orders), ''],
+  ];
+  $('#cards').innerHTML = items.map(([k, v, c]) =>
+    `<div class="card"><div class="k">${k}</div><div class="v ${c}" style="${v.length > 22 ? 'font-size:14px' : ''}">${v}</div></div>`).join('');
+  $('#spot').innerHTML = s.spot.map(b => `<tr><td>${esc(b.coin)}</td><td></td><td>${num(b.total, 4)}</td><td>${num(b.hold, 4)}</td></tr>`).join('');
+}
+
+let positions = [];
+// ---- trend columns: change of size / position value / uPnL against the round 15 min, 2 h, 1 day ago
+const TRENDS = ['15m', '2h', '1d'];
+const age = ms => ms < 5400e3 ? Math.round(ms / 60e3) + ' min' : ms < 48 * 3600e3 ? (ms / 3600e3).toFixed(1) + ' h' : (ms / 86400e3).toFixed(1) + ' d';
+const trendNum = (m, x) => m === 'szi' ? Number(x).toLocaleString('en-US', { maximumFractionDigits: 4 })
+  : (x < 0 ? '-$' : '$') + compact.format(Math.abs(x));
+function trendCell(p, key) {
+  const t = p.trend && p.trend[key], m = $('#trendMetric').value;
+  if (!t) return '<td class="muted" title="not enough history yet">–</td>';
+  const now = p[m], then = t[m], d = now - then;
+  const tip = `${trendNum(m, then)} -> ${trendNum(m, now)} (reference round ${age(state.round - t.base_ms)} ago)`;
+  if (t.opened) return `<td class="trend new" title="${esc(tip)}">new</td>`;
+  if (!d) return `<td class="muted" title="${esc(tip)}">0</td>`;
+  const pct = then ? d / Math.abs(then) * 100 : null;
+  return `<td class="trend ${sgn(d)}" title="${esc(tip)}">${d > 0 ? '+' : ''}${trendNum(m, d)}`
+    + (pct == null ? '' : `<small>${pct > 0 ? '+' : ''}${num(pct, Math.abs(pct) < 1 ? 2 : 1)}%</small>`) + '</td>';
+}
+function renderPositions() {
+  const f = $('#filter').value.trim().toLowerCase();
+  $('#pos').innerHTML = positions.filter(p => p.coin.toLowerCase().includes(f)).map(p => {
+    const d = p.szi_prev == null ? null : p.szi - p.szi_prev;
+    return `<tr data-coin="${esc(p.coin)}" class="${p.coin === state.coin ? 'sel' : ''}">
+      <td>${esc(p.coin)}</td><td class="${p.side === 'long' ? 'pos' : 'neg'}">${p.side}</td>
+      <td>${size(p.szi, p.coin)}</td><td class="${d ? sgn(d) : 'muted'}">${d == null ? '–' : d === 0 ? '0' : Number(d).toLocaleString('en-US', { maximumFractionDigits: 4 })}</td>
+      ${TRENDS.map(k => trendCell(p, k)).join('')}
+      <td>${usd(p.position_value)}</td><td class="${sgn(p.upnl)}">${usd(p.upnl)}</td>
+      <td class="${sgn(p.roe)}">${p.roe == null ? '–' : num(p.roe * 100, 2) + '%'}</td>
+      <td>${px(p.entry_px)}</td><td>${px(p.mark_px)}</td><td>${px(p.liq_px)}</td>
+      <td>${p.leverage ?? ''}x ${p.leverage_type ?? ''}</td></tr>`;
+  }).join('');
+}
+
+async function loadCoin() {
+  if (!state.coin) return;
+  $('#coinTitle').textContent = 'Position history: ' + state.coin;
+  const s = await api('series', { address: state.address, coin: state.coin, since: since() });
+  setData(charts.szi, s.cols, s.rows, ['szi']);
+  setData(charts.pv, s.cols, s.rows, ['position_value']);
+  setData(charts.pupnl, s.cols, s.rows, ['upnl']);
+  setData(charts.px, s.cols, s.rows, ['mark_px', 'entry_px']);
+}
+
+// ---- wallets: selector + management panel (writes config.json through /api/wallets)
+const walletUi = { confirm: null };
+function syncWallets(list) {
+  const sel = $('#address'), sig = list.map(a => a.address + '|' + a.label).join(',');
+  if (sel.dataset.sig !== sig) {
+    sel.innerHTML = '';
+    list.forEach(a => sel.add(new Option(`${a.label} (${a.address.slice(0, 6)}…${a.address.slice(-4)})`, a.address)));
+    sel.dataset.sig = sig;
+    if (!list.some(a => a.address === state.address)) { state.address = list.length ? list[0].address : null; state.coin = null; }
+    if (state.address) sel.value = state.address;
+  }
+  $('#walletList').innerHTML = list.map(a => {
+    const c = walletUi.confirm === a.address;
+    return `<tr data-addr="${esc(a.address)}"><td style="text-align:left">${esc(a.label)}</td>`
+      + `<td class="muted" style="text-align:left;font-family:ui-monospace,Consolas,monospace">${esc(a.address)}</td>`
+      + `<td class="${a.error ? 'neg' : 'muted'}" style="text-align:left">${a.error ? esc(a.error) : a.last_round_ms ? 'collecting' : 'waiting for first data…'}</td>`
+      + `<td>${c ? '<button data-act="yes" class="neg">Confirm remove</button> <button data-act="no">Cancel</button>'
+                : '<button data-act="remove">Remove</button>'}</td></tr>`;
+  }).join('') || '<tr><td class="muted" style="text-align:left">No wallets yet.</td></tr>';
+}
+async function walletApi(path, body) {
+  const r = await fetch('/api/wallets' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+const wmsg = (t, bad) => { $('#wMsg').textContent = t; $('#wMsg').className = bad ? 'neg' : 'muted'; };
+$('#walletsBtn').onclick = () => { $('#wallets').hidden = !$('#wallets').hidden; if (!$('#wallets').hidden) $('#wAddr').focus(); };
+$('#walletsClose').onclick = () => { $('#wallets').hidden = true; walletUi.confirm = null; };
+$('#walletForm').onsubmit = async e => {
+  e.preventDefault();
+  const address = $('#wAddr').value.trim();
+  $('#wAdd').disabled = true;
+  try {
+    await walletApi('', { address, label: $('#wLabel').value.trim(), fills: $('#wFills').checked });
+    state.address = address.toLowerCase(); state.coin = null;
+    $('#wAddr').value = ''; $('#wLabel').value = ''; $('#wFills').checked = false;
+    wmsg('Added. Data arrives with the next collection round (a few seconds).');
+    await refresh();
+  } catch (err) { wmsg(err.message, true); }
+  $('#wAdd').disabled = false;
+};
+$('#walletList').onclick = async e => {
+  const b = e.target.closest('button'), tr = e.target.closest('tr');
+  if (!b || !tr) return;
+  const addr = tr.dataset.addr;
+  if (b.dataset.act === 'remove') walletUi.confirm = addr;
+  else if (b.dataset.act === 'no') walletUi.confirm = null;
+  else if (b.dataset.act === 'yes') {
+    try { await walletApi('/remove', { address: addr }); wmsg('Removed (its history stays in the database).'); }
+    catch (err) { wmsg(err.message, true); }
+    walletUi.confirm = null;
+  }
+  await refresh();
+};
+
+async function refresh() {
+  try {
+    const st = await api('status');
+    state.interval = st.interval_seconds;
+    syncWallets(st.addresses);
+    if (!state.address) {
+      $('#status').className = 'status warn';
+      $('#status').textContent = 'No wallets tracked yet - use the Wallets button to add one.';
+      $('#cards').innerHTML = ''; $('#pos').innerHTML = ''; $('#spot').innerHTML = '';
+      return;
+    }
+    const me = st.addresses.find(a => a.address === state.address);
+    const age = me && me.last_round_ms ? st.now_ms - me.last_round_ms : null;
+    const stale = age != null && age > 2.5 * st.interval_seconds * 1000;
+    $('#status').className = 'status' + (stale || (me && me.error) ? ' warn' : '');
+    $('#status').textContent = age == null
+      ? 'No data yet - the first collection is running…' + (me && me.error ? ' · ' + me.error : '')
+      :`Last collection ${stamp(me.last_round_ms)} (${Math.round(age / 1000)} s ago) · every ${Math.round(st.interval_seconds)} s`
+        + (me.error ? ' · error: ' + me.error : '') + (stale ? ' · collector looks stalled' : '');
+    if (age == null) { setTimeout(refresh, 3000); return; }
+
+    const [sum, pos, acc] = await Promise.all([
+      api('summary', { address: state.address }), api('positions', { address: state.address }),
+      api('account_series', { address: state.address, since: since() })]);
+    renderCards(sum);
+    state.round = sum.round_ms;
+    positions = pos;
+    if (!positions.some(p => p.coin === state.coin)) state.coin = positions.length ? positions[0].coin : null;
+    renderPositions();
+    setData(charts.acc, acc.cols, acc.rows, ['equity', 'position_value']);
+    setData(charts.upnl, acc.cols, acc.rows, ['upnl']);
+    await loadCoin();
+  } catch (e) {
+    $('#status').className = 'status warn';
+    $('#status').textContent = 'Error: ' + e.message;
+  }
+}
+
+$('#address').onchange = e => { state.address = e.target.value; state.coin = null; refresh(); };
+$('#range').onchange = refresh;
+$('#filter').oninput = renderPositions;
+$('#trendMetric').onchange = renderPositions;
+$('#pos').onclick = e => {
+  const tr = e.target.closest('tr');
+  if (!tr) return;
+  state.coin = tr.dataset.coin;
+  renderPositions();
+  loadCoin();
+};
+// ---- debug drawer: live event tail from /api/events (rounds, snapshots, position changes, HTTP calls, errors)
+const dbg = { open: false, last: 0, all: [], timer: null };
+const hms = t => { const d = new Date(t); return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0'); };
+const evHtml = e => `<div class="ev ${e.level} ${e.kind}" title="${esc(JSON.stringify(e.data))}"><span class="t">${hms(e.ts)}</span> `
+  + `<span class="k">${e.kind}</span> <span class="m">${esc(e.msg)}</span></div>`;
+function dbgRender() {
+  const showHttp = $('#dbgHttp').checked, box = $('#dbgLog');
+  box.innerHTML = dbg.all.filter(e => showHttp || e.kind !== 'http' || e.level !== 'DEBUG').map(evHtml).join('');
+  box.scrollTop = box.scrollHeight;
+}
+async function dbgPoll() {
+  if (!dbg.open || $('#dbgPause').checked) return;
+  try {
+    const [d, st] = await Promise.all([api('events', { after: dbg.last, limit: 500 }), api('status')]);
+    const c = st.collector, now = Date.now();
+    $('#dbgInfo').textContent = `round #${c.rounds} · last took ${c.last_duration_ms ?? '–'} ms · next in `
+      + (c.next_round_ms ? Math.max(0, Math.round((c.next_round_ms - now) / 1000)) + ' s' : '–')
+      + ` · interval ${st.interval_seconds} s · log file: ${c.log_file}`;
+    if (d.last_id < dbg.last) { dbg.all = []; dbg.last = 0; }
+    if (d.events.length) {
+      const box = $('#dbgLog'), atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+      dbg.all = dbg.all.concat(d.events).slice(-3000);
+      dbg.last = d.last_id;
+      const showHttp = $('#dbgHttp').checked;
+      box.insertAdjacentHTML('beforeend', d.events.filter(e => showHttp || e.kind !== 'http' || e.level !== 'DEBUG').map(evHtml).join(''));
+      if (atEnd) box.scrollTop = box.scrollHeight;
+    }
+  } catch (e) { $('#dbgInfo').textContent = 'debug poll failed: ' + e.message; }
+}
+function dbgToggle(open) {
+  dbg.open = open;
+  $('#debug').hidden = !open;
+  document.body.classList.toggle('dbg', open);
+  clearInterval(dbg.timer);
+  if (open) { dbg.last = 0; dbg.all = []; $('#dbgLog').innerHTML = ''; dbgPoll(); dbg.timer = setInterval(dbgPoll, 2000); }
+}
+$('#dbgBtn').onclick = () => dbgToggle(!dbg.open);
+$('#dbgClose').onclick = () => dbgToggle(false);
+$('#dbgClear').onclick = () => { dbg.all = []; $('#dbgLog').innerHTML = ''; };
+$('#dbgHttp').onchange = dbgRender;
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

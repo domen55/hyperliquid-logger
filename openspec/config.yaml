@@ -1,0 +1,20 @@
+schema: spec-driven
+
+# Project context an agent cannot infer by reading the code.
+context: |
+  Local tool that logs Hyperliquid wallets (initially Wintermute 0xecb6...2b00 and a BTC-short whale
+  0x3ff5...f705, the ones shown on hyperbot.network/trader/<address>) into SQLite and shows them over time
+  in a local dashboard. The owner is a software engineer and reads Slovenian; code, identifiers and commit
+  messages are in English.
+  - Data source is the public Hyperliquid info API only. Hyperbot's Open API
+    (openapi-docs.hyperbot.network) needs an access key (HmacSHA1 signed requests) and is NOT used.
+  - Everything runs locally (127.0.0.1); Python standard library only, plus a vendored Chart.js.
+  - Positions on builder dexes (xyz:*) are separate dex queries; without them Wintermute shows 86 instead of
+    133 positions.
+  - During development the interval is 60 s; the intended production interval is 300 s (5 min).
+  - Out of scope for now: authentication, remote access, alerting, USD valuation of spot balances,
+    other exchanges (Aster).
+
+rules:
+  specs:
+    - Describe behaviour that exists in the code today; every requirement needs at least one scenario.
