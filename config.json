@@ -2,6 +2,8 @@
   "interval_seconds": 60,
   "db": "hyperliquid.sqlite",
   "port": 8765,
+  "host": "0.0.0.0",
+  "allow_remote_edit": false,
   "log_dir": "logs",
   "log_level": "DEBUG",
   "addresses": [
@@ -13,6 +15,11 @@
     {
       "address": "0x3ff54fd26855db3758d0b5ae7aed47440c47f705",
       "label": "BTC short whale",
+      "fills": false
+    },
+    {
+      "address": "0xefe4c06b6d310978bead596e1798a4fc1d9d194b",
+      "label": "krneki",
       "fills": false
     }
   ]

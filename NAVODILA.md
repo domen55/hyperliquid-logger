@@ -20,7 +20,7 @@ python app.py
 ali dvokliknite **`start.cmd`**. Okno pustite odprto: dokler teče, program zbira podatke. Ustavite ga s **Ctrl+C**.
 
 Nato v brskalniku odprite **http://127.0.0.1:8765**. Prva runda traja približno 15 s, do takrat stran kaže
-"No data yet". Stran je dostopna samo na vašem računalniku.
+"No data yet". Z drugih naprav v omrežju glejte razdelek "Dostop iz drugih naprav".
 
 ## Najprej preverite, da vse deluje
 
@@ -46,6 +46,28 @@ OK   log D:\...\logs\hyperliquid-logger.log: no errors in the last 400 lines
 Result: all OK
 ```
 
+## Dostop iz drugih naprav v lokalnem omrežju
+
+Nastavitev `"host": "0.0.0.0"` v `config.json` (zdaj privzeta v tem projektu) naredi stran dosegljivo tudi z drugih
+naprav v istem omrežju (telefon, prenosnik). Ob zagonu program izpiše naslove, na primer:
+
+```
+dashboard http://127.0.0.1:8765  http://10.0.0.4:8765  ...
+```
+
+Na telefonu (v istem Wi-Fi) odprite naslov z IP-jem računalnika, npr. **http://10.0.0.4:8765**. Računalnik mora teči in biti
+prižgan. Če je IP drug, ga pokaže zagonski izpis in `python app.py --check`.
+
+- **Požarni zid:** Windows ob prvem zagonu vpraša, ali sme Python komunicirati v omrežju. Dovolite **zasebna omrežja**.
+  Če se telefon kljub temu ne poveže, v Windows Defender Firewall dovolite Python za zasebna omrežja.
+- **Ni gesla.** Vsak v vašem omrežju lahko stran vidi. Uporabljajte samo v zaupanja vrednem domačem omrežju (ne v javnem
+  Wi-Fi). Stran ne kaže ključev ali gesel, kaže pa podatke o denarnicah, ki jih spremljate.
+- **Druge naprave so samo za branje.** Dodajanje in odstranjevanje denarnic deluje samo na računalniku, kjer teče program.
+  Če želite urejanje tudi z drugih naprav, nastavite `"allow_remote_edit": true` (velja takoj, brez ponovnega zagona).
+- **Zaščita pred tujimi stranmi:** program odgovarja samo na naslove, ki jih pozna (127.0.0.1, `localhost`, ime računalnika,
+  njegovi IP-ji). Za dodatno ime (npr. DNS ime v domači mreži) ga dodajte v `"allowed_hosts": ["ime:8765"]`.
+- Samo lokalno spet: `"host": "127.0.0.1"` in ponovni zagon.
+
 ## Nastavitve (`config.json`)
 
 | Ključ | Pomen | Privzeto |
@@ -53,11 +75,14 @@ Result: all OK
 | `interval_seconds` | razmik med zbiranjem (najmanj 5). Razvoj: 60, običajno: 300 (5 min) | 300 |
 | `addresses` | denarnice: `address`, `label`, `fills` | prazno |
 | `port` | vrata strani | 8765 |
+| `host` | `127.0.0.1` = samo ta računalnik, `0.0.0.0` = tudi lokalno omrežje (glej zgoraj) | `127.0.0.1` |
+| `allow_remote_edit` | smejo druge naprave dodajati/odstranjevati denarnice | `false` |
+| `allowed_hosts` | dodatna imena, pod katerimi je stran dosegljiva | prazno |
 | `db` | datoteka baze | `hyperliquid.sqlite` |
 | `log_dir`, `log_level` | mapa dnevnika, `DEBUG` (vse) ali `INFO` (brez HTTP klicev) | `logs`, `DEBUG` |
 
 Spremembe `interval_seconds` in denarnic veljajo takoj (program prebere datoteko pred vsako rundo in ob shranjevanju
-začne novo). Za `port`, `db`, `log_dir` in `log_level` program ponovno zaženite.
+začne novo). Za `host`, `port`, `db`, `log_dir` in `log_level` program ponovno zaženite.
 Denarnice lahko dodajate in odstranjujete tudi na strani z gumbom **Wallets**.
 
 ## Kaj se dogaja: izpisi in dnevnik
@@ -86,6 +111,9 @@ Vrstica pod naslovom strani kaže čas zadnjega zbiranja in opozori, če je star
 | `Hyperliquid server error (HTTP 5xx)` | težava na strani Hyperliquida | običajno mine sama |
 | `the database is locked` | drug program ali druga kopija uporablja bazo | zaprite jo |
 | `cannot write to the database file` | ni pravic ali je disk poln | preverite mapo in prostor |
+| `this address is not allowed - open the dashboard at one of: ...` (403) | stran je odprta pod imenom, ki ga program ne pozna | uporabite enega od naštetih naslovov ali ime dodajte v `allowed_hosts` |
+| `changing wallets is only allowed on the computer running the app` (403) | urejanje iz druge naprave | uredite na računalniku ali nastavite `allow_remote_edit` |
+| telefon se ne more povezati | požarni zid, drugo omrežje ali `host` je `127.0.0.1` | dovolite Python za zasebna omrežja; isti Wi-Fi; `host: 0.0.0.0` in ponovni zagon |
 | `is the address right?` | denarnica nima pozicij, sredstev ali stanj | preverite naslov (0x + 40 znakov) |
 | stran je prazna ali se ne osvežuje | star zavihek ali program ne teče | **Ctrl+F5**; preverite okno s programom |
 | `unexpected API response format` | Hyperliquid je spremenil odgovor | pošljite izpis iz dnevnika |

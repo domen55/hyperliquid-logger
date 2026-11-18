@@ -49,7 +49,7 @@ def run(config_path, out=print, post=None):
     port = int(cfg["port"])
     s = socket.socket()
     try:
-        s.bind(("127.0.0.1", port))
+        s.bind((cfg["host"], port))
         say("OK", f"port {port} is free")
     except OSError:
         say("WARN", f"port {port} is in use",
@@ -57,6 +57,10 @@ def run(config_path, out=print, post=None):
             'port: change "port" in config.json')
     finally:
         s.close()
+    say("OK", "dashboard: " + ", ".join(app.dashboard_urls(cfg["host"], port, app.lan_ips())))
+    note = app.exposure_notice(cfg)
+    if note:
+        say("WARN", note)
 
     try:
         db = logger.connect(cfg["db"])

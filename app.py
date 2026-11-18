@@ -8,7 +8,11 @@ config.json (re-read before every collection round, so interval/addresses can be
 without a restart; db and port need a restart):
     {"addresses": [{"address": "0x...", "label": "Wintermute", "fills": false}],
      "interval_seconds": 300, "db": "hyperliquid.sqlite", "port": 8765,
-     "log_dir": "logs", "log_level": "DEBUG"}
+     "log_dir": "logs", "log_level": "DEBUG",
+     "host": "127.0.0.1", "allow_remote_edit": false, "allowed_hosts": []}
+
+host: "127.0.0.1" = this computer only; "0.0.0.0" = other devices on the local network can open the dashboard too
+(read-only unless allow_remote_edit is true; there is no password, so use it on a trusted network only).
 
 Events (rounds, snapshots, position changes, every API call, errors) go to the console, to
 <log_dir>/hyperliquid-logger.log (rotating) and to the "Debug" drawer of the dashboard.
@@ -149,7 +153,8 @@ def setup_logging(cfg, verbose=False):
 def load_config(path):
     cfg = {"addresses": [], "interval_seconds": 300, "db": "hyperliquid.sqlite",
            "fills": False, "backfill_hours": 0, "port": 8765,
-           "log_dir": "logs", "log_level": "DEBUG"}
+           "log_dir": "logs", "log_level": "DEBUG",
+           "host": "127.0.0.1", "allow_remote_edit": False, "allowed_hosts": []}
     cfg.update(json.loads(Path(path).read_text(encoding="utf-8")))
     addrs = []
     for a in cfg["addresses"]:
@@ -499,6 +504,80 @@ def q_status(db, cfg):
                            "error": STATE["errors"].get(a["address"])} for a in cfg["addresses"]]}
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def lan_ips():
+    """This computer's IPv4 addresses on the network (the first is the one used for the default route)."""
+    ips = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect(("10.255.255.255", 1))  # UDP connect sends nothing; it only picks the outgoing interface
+            ips.append(sk.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip not in ips and not ip.startswith("127."):
+                ips.append(ip)
+    except OSError:
+        pass
+    return ips
+
+
+def local_host_names():
+    """Names this computer may be reached by: host name, its .local form and its IP addresses (lower-case)."""
+    return {socket.gethostname().lower()} | set(lan_ips())  # not getfqdn(): it does a slow DNS lookup
+
+
+def allowed_hosts(port, cfg, own_names):
+    names = {"127.0.0.1", "localhost", "[::1]"} | {n.lower() for n in own_names}
+    names |= {n + ".local" for n in list(names) if not n.replace(".", "").isdigit() and not n.startswith("[")}
+    hosts = {f"{n}:{port}" for n in names}
+    return hosts | {h.lower() for h in cfg.get("allowed_hosts", [])}
+
+
+def is_loopback_client(ip):
+    return ip in ("127.0.0.1", "::1") or str(ip).startswith("::ffff:127.")
+
+
+def request_allowed(client_ip, host, origin, ctype, port, cfg, own_names, write):
+    """(ok, reason). Every request needs a Host header this server answers to (DNS-rebinding protection); a request
+    that changes the configuration also needs a local client (unless allow_remote_edit), a same-origin Origin if
+    one is sent, and a JSON content type."""
+    hosts = allowed_hosts(port, cfg, own_names)
+    if (host or "").lower() not in hosts:
+        return False, ("this address is not allowed - open the dashboard at one of: "
+                       + ", ".join(sorted("http://" + h for h in hosts)))
+    if not write:
+        return True, ""
+    if not is_loopback_client(client_ip) and not cfg.get("allow_remote_edit"):
+        return False, ("changing wallets is only allowed on the computer running the app; set "
+                       '"allow_remote_edit": true in config.json to allow it from other devices')
+    if origin is not None and origin.lower() not in {"http://" + h for h in hosts}:
+        return False, "forbidden: not a request from the dashboard page"
+    if (ctype or "").split(";")[0].strip().lower() != "application/json":
+        return False, "forbidden: a JSON request from the dashboard page is required"
+    return True, ""
+
+
+def dashboard_urls(host, port, lan):
+    if host in LOOPBACK_HOSTS:
+        return [f"http://127.0.0.1:{port}"]
+    if host in ("0.0.0.0", "::", ""):
+        return [f"http://127.0.0.1:{port}"] + [f"http://{ip}:{port}" for ip in lan]
+    return [f"http://{host}:{port}"]
+
+
+def exposure_notice(cfg):
+    if cfg.get("host", "127.0.0.1") in LOOPBACK_HOSTS:
+        return None
+    editing = ("Other devices can also change wallets (allow_remote_edit is on)." if cfg.get("allow_remote_edit")
+               else "Other devices get a read-only dashboard.")
+    return ("The dashboard is reachable from the network and has no password: anyone on your network can view it. "
+            + editing + " If other devices cannot connect, allow Python on private networks in the Windows Firewall.")
+
+
 def tail_text(path, lines=300, max_bytes=200_000):
     """The last `lines` lines of a text file, reading at most `max_bytes` from its end."""
     try:
@@ -516,7 +595,9 @@ def tail_text(path, lines=300, max_bytes=200_000):
 
 # ---------------------------------------------------------------- http
 
-def make_handler(holder):
+def make_handler(holder, own_names=None):
+    own = local_host_names() if own_names is None else set(own_names)
+
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -532,23 +613,28 @@ def make_handler(holder):
         def send_json(self, code, obj):
             self.send(code, json.dumps(obj).encode(), "application/json")
 
-        def allowed_write(self):
-            """Only the page itself may change the configuration (Host/Origin check + JSON content type)."""
-            port = self.server.server_address[1]
-            hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-            origin = self.headers.get("Origin")
-            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            return (self.headers.get("Host") in hosts and (origin is None or origin in {f"http://{h}" for h in hosts})
-                    and ctype == "application/json")
+        def guard(self, write):
+            """Host allow-list for every request; extra rules for requests that change the configuration."""
+            try:
+                cfg = holder.get()
+            except Exception:
+                cfg = {}
+            ok, why = request_allowed(self.client_address[0], self.headers.get("Host"),
+                                      self.headers.get("Origin") if write else None,
+                                      self.headers.get("Content-Type") if write else None,
+                                      self.server.server_address[1], cfg, own, write)
+            if not ok:
+                emit("WARNING", "web", f"refused {self.command} {self.path} from {self.client_address[0]} "
+                     f"(Host={self.headers.get('Host')}, Origin={self.headers.get('Origin')}): {why[:90]}")
+                self.send_json(403, {"error": why})
+            return ok
 
         def do_POST(self):
             u = urlparse(self.path)
             if u.path not in ("/api/wallets", "/api/wallets/remove"):
                 return self.send(404, b"unknown endpoint", "text/plain")
-            if not self.allowed_write():
-                emit("WARNING", "web", f"refused {u.path}: request is not from the dashboard page "
-                     f"(Host={self.headers.get('Host')}, Origin={self.headers.get('Origin')})")
-                return self.send_json(403, {"error": "forbidden: not a request from the dashboard page"})
+            if not self.guard(True):
+                return
             try:
                 n = int(self.headers.get("Content-Length") or 0)
                 if n > 10_000:
@@ -573,6 +659,8 @@ def make_handler(holder):
                 self.send_json(500, {"error": repr(e)})
 
         def do_GET(self):
+            if not self.guard(False):
+                return
             u = urlparse(self.path)
             if u.path in FILES:
                 name, ctype = FILES[u.path]
@@ -625,9 +713,9 @@ class LocalServer(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
-def bind_server(port, handler):
+def bind_server(host, port, handler):
     try:
-        return LocalServer(("127.0.0.1", int(port)), handler)
+        return LocalServer((host, int(port)), handler)
     except OSError as e:
         raise StartupError(
             f"port {port} is already in use ({e.strerror or e}). Another copy of the app is probably running: "
@@ -649,7 +737,7 @@ def main(argv=None):
         cfg = holder.get()
         setup_logging(cfg, a.verbose)
         logger.connect(cfg["db"]).close()  # make sure the file and schema exist before serving
-        srv = bind_server(cfg["port"], make_handler(holder))  # before the collector: two copies must never both write
+        srv = bind_server(cfg["host"], cfg["port"], make_handler(holder))  # before the collector: two copies must never both write
     except StartupError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -659,9 +747,13 @@ def main(argv=None):
     stop = threading.Event()
     if not a.no_collect:
         threading.Thread(target=collect_loop, args=(a.config, stop), daemon=True).start()
-    emit("INFO", "start", f"dashboard http://127.0.0.1:{cfg['port']}  interval {cfg['interval_seconds']:.0f} s  "
+    urls = dashboard_urls(cfg["host"], cfg["port"], lan_ips())
+    emit("INFO", "start", f"dashboard {'  '.join(urls)}  interval {cfg['interval_seconds']:.0f} s  "
          f"wallets: {', '.join(w['label'] for w in cfg['addresses']) or 'none'}  db {cfg['db']}  log {STATE['log_file']}"
          "  (Ctrl+C stops; --check = self-check, --verbose = every event)")
+    note = exposure_notice(cfg)
+    if note:
+        emit("INFO", "start", note)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -6,6 +6,11 @@
 
 ## Local app: collector + dashboard
 
+**Network access:** `host` in config.json is `127.0.0.1` (this computer only) by default; `0.0.0.0` serves the local network
+too (`http://<computer IP>:8765`, printed at start). There is no password: other devices get a read-only dashboard
+(`allow_remote_edit: false`), every request needs a known `Host` header (DNS-rebinding protection; extra names in
+`allowed_hosts`). Use it on a trusted home network only; Windows may ask to allow Python on private networks.
+
 ```
 python app.py            # http://127.0.0.1:8765  (stop with Ctrl+C)
 ```
